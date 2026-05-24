@@ -237,7 +237,7 @@ export async function POST(request: Request) {
             if (finalMsg.stop_reason !== 'tool_use') break;
 
             // Execute all tool calls
-            const toolUses = finalMsg.content.filter(b => b.type === 'tool_use') as Anthropic.ToolUseBlock[];
+            const toolUses = finalMsg.content.filter((b: Anthropic.ContentBlock) => b.type === 'tool_use') as Anthropic.ToolUseBlock[];
 
             send('\n\n');
 
