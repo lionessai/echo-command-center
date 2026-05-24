@@ -22,7 +22,15 @@ export default function EchoChat() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
-  const [sessionId] = useState(`echo-${Date.now()}`);
+  const [sessionId] = useState(() => {
+    if (typeof window === 'undefined') return 'echo-default';
+    const stored = localStorage.getItem('echo-session-id');
+    if (stored) return stored;
+    const newId = `echo-${Date.now()}`;
+    localStorage.setItem('echo-session-id', newId);
+    return newId;
+  });
+  const [historyLoaded, setHistoryLoaded] = useState(false);
   const [health, setHealth] = useState<Record<string, string> | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -38,6 +46,27 @@ export default function EchoChat() {
       .then(d => setHealth(d.checks))
       .catch(() => {});
   }, []);
+
+  // Load chat history on mount
+  useEffect(() => {
+    async function fetchHistory() {
+      try {
+        const res = await fetch(`/api/history?sessionId=${sessionId}`);
+        const data = await res.json();
+        if (data.messages && data.messages.length > 0) {
+          setMessages(data.messages.map((m: {role: string; content: string}, i: number) => ({
+            role: m.role as 'user' | 'assistant',
+            content: m.content,
+          })));
+        }
+      } catch {
+        // start fresh if history fails
+      } finally {
+        setHistoryLoaded(true);
+      }
+    }
+    fetchHistory();
+  }, [sessionId]);
 
   const sendMessage = async (text?: string) => {
     const content = text || input.trim();
