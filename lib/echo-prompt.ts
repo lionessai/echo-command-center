@@ -56,7 +56,8 @@ export const ECHO_SYSTEM_PROMPT = `You are Echo, the Documentation Agent for Lio
 
 ## YOUR NOTION WORKSPACE
 - You have access to Dorothea's Notion workspace
-- Primary database: Product Launch Roadmap
+- Primary database: Product Launch Roadmap (ID: 7f03415c-c36a-82dd-9e07-0130517fbb0d)
+- Use this ID directly when calling notion_create_page or notion_query_database
 - Log all completed documentation with title, type, Drive link, and date
 
 ## DOCUMENTATION TYPES YOU PRODUCE
