@@ -1,6 +1,5 @@
 export const dynamic = 'force-dynamic';
 import { listFiles } from '@/lib/drive';
-import { searchNotion } from '@/lib/notion';
 import { loadMessages } from '@/lib/supabase';
 
 export async function GET() {
@@ -14,13 +13,22 @@ export async function GET() {
     results.drive = `❌ ${e instanceof Error ? e.message : 'Failed'}`;
   }
 
-  // Check Notion — search for databases directly
+  // Check Notion — direct fetch (bypasses SDK v5 quirks)
   try {
-    const dbs = await searchNotion('Product Launch Roadmap');
-    const dbCount = dbs.filter((r: { object: string }) => r.object === 'database').length;
-    results.notion = dbCount > 0
+    const res = await fetch('https://api.notion.com/v1/search', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.NOTION_API_TOKEN}`,
+        'Notion-Version': '2022-06-28',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ query: 'Product Launch Roadmap', filter: { value: 'database', property: 'object' } }),
+    });
+    const data = await res.json();
+    const dbs = data.results || [];
+    results.notion = dbs.length > 0
       ? `✅ Product Launch Roadmap connected`
-      : `⚠️ No databases found — share with Astra Echo integration`;
+      : `⚠️ Not found — share database with Astra Echo integration`;
   } catch (e) {
     results.notion = `❌ ${e instanceof Error ? e.message : 'Failed'}`;
   }
