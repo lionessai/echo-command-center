@@ -2,16 +2,17 @@ import Anthropic from '@anthropic-ai/sdk';
 import { ECHO_SYSTEM_PROMPT } from '@/lib/echo-prompt';
 import { saveMessage } from '@/lib/supabase';
 import { listFiles, createFolder, writeDocument, moveFile, ECHO_OUTPUTS_FOLDER_ID } from '@/lib/drive';
-import { listDatabases, createNotionPage, queryDatabase, appendToPage } from '@/lib/notion';
+import { listDatabases, searchNotion, createNotionPage, queryDatabase, appendToPage } from '@/lib/notion';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
+export const maxDuration = 60;
 
 // Echo's tool definitions
 const ECHO_TOOLS: Anthropic.Tool[] = [
   {
     name: 'drive_list_files',
-    description: 'List files and folders in Google Drive. Search by name or list a specific folder.',
+    description: 'List files and folders in Google Drive. Can search by name or list a specific folder.',
     input_schema: {
       type: 'object' as const,
       properties: {
@@ -34,13 +35,13 @@ const ECHO_TOOLS: Anthropic.Tool[] = [
   },
   {
     name: 'drive_write_document',
-    description: 'Create a new document in Google Drive with content. Use for SOPs, build logs, reports, and any documentation.',
+    description: 'Create a new document in Google Drive. Use for SOPs, build logs, reports, agent profiles.',
     input_schema: {
       type: 'object' as const,
       properties: {
-        name: { type: 'string', description: 'File name. Use format: YYYY-MM-DD - Type - Title' },
+        name: { type: 'string', description: 'File name — use format: YYYY-MM-DD - Type - Title' },
         content: { type: 'string', description: 'Full text content of the document.' },
-        folderId: { type: 'string', description: 'Folder ID to save in. Defaults to Echo Outputs.' },
+        folderId: { type: 'string', description: 'Folder ID. Defaults to Echo Outputs.' },
         asGoogleDoc: { type: 'boolean', description: 'Convert to Google Doc format.' },
       },
       required: ['name', 'content'],
@@ -54,14 +55,14 @@ const ECHO_TOOLS: Anthropic.Tool[] = [
       properties: {
         fileId: { type: 'string', description: 'File ID to move.' },
         targetFolderId: { type: 'string', description: 'Destination folder ID.' },
-        newName: { type: 'string', description: 'Optional new name for the file.' },
+        newName: { type: 'string', description: 'Optional new name.' },
       },
       required: ['fileId', 'targetFolderId'],
     },
   },
   {
     name: 'notion_list_databases',
-    description: 'List all Notion databases the integration has access to.',
+    description: 'List all Notion databases accessible to Echo.',
     input_schema: { type: 'object' as const, properties: {} },
   },
   {
@@ -70,7 +71,7 @@ const ECHO_TOOLS: Anthropic.Tool[] = [
     input_schema: {
       type: 'object' as const,
       properties: {
-        databaseId: { type: 'string', description: 'Notion database ID.' },
+        databaseId: { type: 'string', description: 'Notion database ID. Product Launch Roadmap = 7f03415c-c36a-82dd-9e07-0130517fbb0d' },
       },
       required: ['databaseId'],
     },
@@ -81,7 +82,7 @@ const ECHO_TOOLS: Anthropic.Tool[] = [
     input_schema: {
       type: 'object' as const,
       properties: {
-        databaseId: { type: 'string', description: 'Notion database ID to add the page to.' },
+        databaseId: { type: 'string', description: 'Notion database ID. Product Launch Roadmap = 7f03415c-c36a-82dd-9e07-0130517fbb0d' },
         title: { type: 'string', description: 'Page title.' },
         content: { type: 'string', description: 'Page body content.' },
       },
@@ -94,7 +95,7 @@ const ECHO_TOOLS: Anthropic.Tool[] = [
     input_schema: {
       type: 'object' as const,
       properties: {
-        pageId: { type: 'string', description: 'Notion page ID to append to.' },
+        pageId: { type: 'string', description: 'Notion page ID.' },
         content: { type: 'string', description: 'Content to append.' },
       },
       required: ['pageId', 'content'],
@@ -137,15 +138,21 @@ async function executeTool(toolName: string, input: ToolInput): Promise<string> 
       }
       case 'notion_list_databases': {
         const databases = await listDatabases();
-        const simplified = databases.map((db: Record<string, unknown>) => ({
+        const simplified = databases.map(db => ({
           id: db.id,
-          title: (db as { title?: Array<{ plain_text?: string }> }).title?.[0]?.plain_text || 'Untitled',
+          title: (db.title as Array<{plain_text?: string}>)?.[0]?.plain_text || 'Untitled',
         }));
         return JSON.stringify({ databases: simplified });
       }
       case 'notion_query_database': {
         const pages = await queryDatabase(input.databaseId as string);
-        return JSON.stringify({ pages: pages.slice(0, 10) });
+        // Simplify to avoid token bloat
+        const simplified = pages.slice(0, 10).map((p: Record<string, unknown>) => ({
+          id: p.id,
+          url: p.url,
+          title: ((p.properties as Record<string, {title?: Array<{plain_text?: string}>}>)?.Name?.title?.[0]?.plain_text) || 'Untitled',
+        }));
+        return JSON.stringify({ pages: simplified, count: pages.length });
       }
       case 'notion_create_page': {
         const page = await createNotionPage(
@@ -154,7 +161,7 @@ async function executeTool(toolName: string, input: ToolInput): Promise<string> 
           undefined,
           input.content as string | undefined
         );
-        return JSON.stringify({ success: true, pageId: (page as { id: string }).id, url: (page as { url: string }).url });
+        return JSON.stringify({ success: true, pageId: (page as {id: string}).id, url: (page as {url: string}).url });
       }
       case 'notion_append_to_page': {
         await appendToPage(input.pageId as string, input.content as string);
@@ -164,7 +171,9 @@ async function executeTool(toolName: string, input: ToolInput): Promise<string> 
         return JSON.stringify({ error: `Unknown tool: ${toolName}` });
     }
   } catch (err) {
-    return JSON.stringify({ error: err instanceof Error ? err.message : 'Tool failed' });
+    const msg = err instanceof Error ? err.message : 'Tool failed';
+    console.error(`[Echo Tool Error] ${toolName}:`, msg);
+    return JSON.stringify({ error: msg });
   }
 }
 
@@ -175,7 +184,6 @@ export async function POST(request: Request) {
 
   try {
     const { messages, sessionId = 'echo-main' } = await request.json();
-
     const lastUser = [...messages].reverse().find((m: { role: string }) => m.role === 'user');
     if (lastUser?.content) {
       await saveMessage({ session_id: sessionId, role: 'user', content: lastUser.content });
@@ -190,76 +198,91 @@ export async function POST(request: Request) {
     const fullSystem = `${ECHO_SYSTEM_PROMPT}\n\n## CURRENT DATE & TIME\nRight now it is: ${now}\nUse ISO format (YYYY-MM-DD) for all file names and document headers.`;
 
     const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-
-    // Agentic loop — up to 5 tool rounds
-    let currentMessages = [...messages];
-    let accumulatedText = '';
-    let toolRounds = 0;
-    const MAX_ROUNDS = 5;
-
-    while (toolRounds < MAX_ROUNDS) {
-      const response = await client.messages.create({
-        model: 'claude-sonnet-4-5',
-        max_tokens: 4096,
-        system: fullSystem,
-        messages: currentMessages,
-        tools: ECHO_TOOLS,
-      });
-
-      const textBlocks = response.content.filter(b => b.type === 'text') as Anthropic.TextBlock[];
-      if (textBlocks.length > 0) accumulatedText += textBlocks.map(b => b.text).join('');
-
-      if (response.stop_reason !== 'tool_use') break;
-
-      // Execute tools
-      const toolUseBlocks = response.content.filter(b => b.type === 'tool_use') as Anthropic.ToolUseBlock[];
-      const toolResults = await Promise.all(
-        toolUseBlocks.map(async (block) => ({
-          type: 'tool_result' as const,
-          tool_use_id: block.id,
-          content: await executeTool(block.name, block.input as ToolInput),
-        }))
-      );
-
-      currentMessages = [
-        ...currentMessages,
-        { role: 'assistant' as const, content: response.content },
-        { role: 'user' as const, content: toolResults },
-      ];
-      toolRounds++;
-    }
-
-    // Final streaming response
-    const finalStream = await client.messages.create({
-      model: 'claude-sonnet-4-5',
-      max_tokens: 4096,
-      system: fullSystem,
-      messages: currentMessages,
-      stream: true,
-    });
-
     const encoder = new TextEncoder();
+
     const readable = new ReadableStream({
       async start(controller) {
+        let fullAssistantText = '';
+
+        const send = (text: string) => {
+          controller.enqueue(encoder.encode(text));
+          fullAssistantText += text;
+        };
+
         try {
-          let finalText = '';
-          for await (const event of finalStream) {
-            if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
-              controller.enqueue(encoder.encode(event.delta.text));
-              finalText += event.delta.text;
+          let currentMessages = [...messages];
+          let rounds = 0;
+          const MAX_ROUNDS = 3;
+
+          while (rounds < MAX_ROUNDS) {
+            // Use streaming for every call
+            const stream = await client.messages.stream({
+              model: 'claude-sonnet-4-5',
+              max_tokens: 4096,
+              system: fullSystem,
+              messages: currentMessages,
+              tools: ECHO_TOOLS,
+            });
+
+            // Stream text immediately as it arrives
+            for await (const event of stream) {
+              if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+                send(event.delta.text);
+              }
             }
+
+            const finalMsg = await stream.finalMessage();
+
+            // No tool calls — we're done
+            if (finalMsg.stop_reason !== 'tool_use') break;
+
+            // Execute all tool calls
+            const toolUses = finalMsg.content.filter(b => b.type === 'tool_use') as Anthropic.ToolUseBlock[];
+
+            send('\n\n');
+
+            const toolResults = await Promise.all(
+              toolUses.map(async (block) => {
+                const result = await executeTool(block.name, block.input as ToolInput);
+                return {
+                  type: 'tool_result' as const,
+                  tool_use_id: block.id,
+                  content: result,
+                };
+              })
+            );
+
+            // Add assistant response + tool results to message history
+            currentMessages = [
+              ...currentMessages,
+              { role: 'assistant' as const, content: finalMsg.content },
+              { role: 'user' as const, content: toolResults },
+            ];
+
+            rounds++;
           }
+
           controller.close();
-          const combined = accumulatedText ? accumulatedText + '\n\n' + finalText : finalText;
-          if (combined) {
-            await saveMessage({ session_id: sessionId, role: 'assistant', content: combined });
+
+          // Save complete assistant response
+          if (fullAssistantText.trim()) {
+            await saveMessage({ session_id: sessionId, role: 'assistant', content: fullAssistantText.trim() });
           }
-        } catch (err) { controller.error(err); }
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : 'Unknown error';
+          console.error('[Echo Chat Error]', msg);
+          send(`\n\n⚠️ An error occurred: ${msg}`);
+          controller.close();
+        }
       },
     });
 
     return new Response(readable, {
-      headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no' },
+      headers: {
+        'Content-Type': 'text/plain; charset=utf-8',
+        'Cache-Control': 'no-cache',
+        'X-Accel-Buffering': 'no',
+      },
     });
   } catch (error: unknown) {
     return Response.json({ error: error instanceof Error ? error.message : 'Unknown error' }, { status: 500 });
